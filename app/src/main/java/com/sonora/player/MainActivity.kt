@@ -24,6 +24,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.launch
@@ -34,7 +36,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.net.URLEncoder
 
-data class Track(val id: String, val title: String, val artist: String, val artwork: String?)
+data class Track(val id: String, val title: String, val artist: String, val artwork: String?, val source: String = "Audius")
 
 private val Ink = Color(0xFF0B0A10)
 private val SurfaceOne = Color(0xFF17141F)
@@ -44,13 +46,16 @@ private val Lavender = Color(0xFFBBA4FF)
 private val Muted = Color(0xFFA9A3B3)
 
 class MainActivity : ComponentActivity() {
+    private var sonoraPlayer: ExoPlayer? = null
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val player = ExoPlayer.Builder(this).build()
+        sonoraPlayer = player
         setContent { SonoraApp(player) }
     }
     override fun onDestroy() {
-        // The player is released by the activity when it is destroyed.
+        sonoraPlayer?.release()
+        sonoraPlayer = null
         super.onDestroy()
     }
 }
@@ -62,6 +67,7 @@ fun SonoraApp(player: ExoPlayer) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf("Home") }
     var query by remember { mutableStateOf("") }
+    var selectedSource by remember { mutableStateOf("All sources") }
     var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     var favorites by remember { mutableStateOf(prefs.getStringSet("favorites", emptySet())?.toSet() ?: emptySet()) }
     var knownTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
@@ -83,9 +89,16 @@ fun SonoraApp(player: ExoPlayer) {
     fun play(track: Track) {
         current = track
         knownTracks = (listOf(track) + knownTracks.filterNot { it.id == track.id }).take(30)
-        player.setMediaItem(MediaItem.fromUri(Audius.streamUrl(track.id)))
-        player.prepare()
-        player.play()
+        scope.launch {
+            try {
+                val stream = if (track.source == "Internet Archive") ArchiveCatalog.streamUrl(track.id) else Audius.streamUrl(track.id)
+                player.setMediaItem(MediaItem.fromUri(stream))
+                player.prepare()
+                player.play()
+            } catch (_: Exception) {
+                error = "This track could not be streamed. Try another result."
+            }
+        }
     }
 
     fun search() {
@@ -94,7 +107,11 @@ fun SonoraApp(player: ExoPlayer) {
         error = null
         scope.launch {
             try {
-                tracks = Audius.search(query)
+                tracks = when (selectedSource) {
+                    "Audius" -> Audius.search(query)
+                    "Internet Archive" -> ArchiveCatalog.search(query)
+                    else -> (Audius.search(query) + ArchiveCatalog.search(query)).distinctBy { it.source + it.id }
+                }
                 knownTracks = (tracks + knownTracks).distinctBy { it.id }.take(40)
                 if (tracks.isEmpty()) error = "No tracks found. Try another artist or title."
             } catch (_: Exception) {
@@ -154,6 +171,7 @@ fun SonoraApp(player: ExoPlayer) {
                                 )
                                 "Search" -> SearchScreen(
                                     query = query, onQuery = { query = it }, onSearch = { search() },
+                                    source = selectedSource, onSource = { selectedSource = it; tracks = emptyList(); error = null },
                                     tracks = tracks, loading = loading, error = error,
                                     favorites = favorites, onPlay = { play(it); showPlayer = true },
                                     onFavorite = { toggleFavorite(it) }
@@ -288,6 +306,7 @@ private fun HomeTile(title: String, subtitle: String, icon: androidx.compose.ui.
 @Composable
 private fun SearchScreen(
     query: String, onQuery: (String) -> Unit, onSearch: () -> Unit,
+    source: String, onSource: (String) -> Unit,
     tracks: List<Track>, loading: Boolean, error: String?,
     favorites: Set<String>, onPlay: (Track) -> Unit, onFavorite: (Track) -> Unit
 ) {
@@ -308,7 +327,16 @@ private fun SearchScreen(
                 focusedContainerColor = SurfaceOne, unfocusedContainerColor = SurfaceOne
             )
         )
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
+        Text("MUSIC SOURCES", color = Lavender, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            listOf("All sources", "Audius", "Internet Archive").forEach { item ->
+                FilterChip(selected = source == item, onClick = { onSource(item) }, label = { Text(item, fontSize = 11.sp) },
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(0xFF49304F), selectedLabelColor = Pink))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
         when {
             loading -> LinearProgressIndicator(Modifier.fillMaxWidth(), color = Pink)
             error != null -> Text(error, color = Pink, modifier = Modifier.padding(8.dp))
@@ -409,7 +437,8 @@ private fun TrackRow(track: Track, isFavorite: Boolean, onPlay: () -> Unit, onFa
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(45.dp).clip(RoundedCornerShape(11.dp)).background(Color(0xFF382942)), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.MusicNote, null, tint = Pink)
+            if (!track.artwork.isNullOrBlank()) AsyncImage(model = track.artwork, contentDescription = "Album artwork", modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(11.dp)))
+            else Icon(Icons.Default.MusicNote, null, tint = Pink)
         }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(track.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -430,7 +459,8 @@ private fun MiniPlayer(track: Track, isPlaying: Boolean, onOpen: () -> Unit, onT
             .clickable { onOpen() }.padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Album, null, tint = Pink, modifier = Modifier.size(31.dp))
+        if (!track.artwork.isNullOrBlank()) AsyncImage(model = track.artwork, contentDescription = "Album artwork", modifier = Modifier.size(38.dp).clip(RoundedCornerShape(8.dp)))
+        else Icon(Icons.Default.Album, null, tint = Pink, modifier = Modifier.size(31.dp))
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             Text(track.title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
             Text(track.artist, fontSize = 10.sp, color = Muted, maxLines = 1)
@@ -454,7 +484,8 @@ private fun FullPlayer(track: Track, isPlaying: Boolean, onBack: () -> Unit, onT
             .background(Brush.linearGradient(listOf(Color(0xFF71477D), Color(0xFF30203D), Color(0xFF17131F)))),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.GraphicEq, null, tint = Pink, modifier = Modifier.size(120.dp))
+            if (!track.artwork.isNullOrBlank()) AsyncImage(model = track.artwork, contentDescription = "Album artwork", modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(28.dp)))
+            else Icon(Icons.Default.GraphicEq, null, tint = Pink, modifier = Modifier.size(120.dp))
         }
         Spacer(Modifier.height(34.dp))
         Text(track.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
@@ -504,7 +535,8 @@ object Audius {
                         id = id,
                         title = item.optString("title", "Untitled"),
                         artist = user?.optString("name") ?: "Unknown artist",
-                        artwork = item.optJSONObject("artwork")?.optString("150x150")
+                        artwork = item.optJSONObject("artwork")?.optString("480x480") ?: item.optJSONObject("artwork")?.optString("150x150"),
+                        source = "Audius"
                     ))
                 }
             }
@@ -512,4 +544,61 @@ object Audius {
     }
 
     fun streamUrl(trackId: String): String = "$BASE/tracks/$trackId/stream?app_name=$APP"
+}
+
+
+object ArchiveCatalog {
+    private val client = OkHttpClient()
+
+    suspend fun search(term: String): List<Track> = withContext(Dispatchers.IO) {
+        val q = URLEncoder.encode("$term AND mediatype:audio", "UTF-8")
+        val url = "https://archive.org/advancedsearch.php?q=$q&fl[]=identifier,title,creator&rows=20&page=1&output=json"
+        val request = Request.Builder().url(url).header("User-Agent", "SONORA/0.3 Android").build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("Internet Archive search failed: ${response.code}")
+            val docs = JSONObject(response.body?.string() ?: "{}")
+                .optJSONObject("response")?.optJSONArray("docs") ?: return@withContext emptyList()
+            buildList {
+                for (i in 0 until docs.length()) {
+                    val item = docs.optJSONObject(i) ?: continue
+                    val id = item.optString("identifier")
+                    if (id.isNotBlank() && id != "null") add(
+                        Track(
+                            id = id,
+                            title = item.optString("title", "Untitled recording"),
+                            artist = item.optString("creator", "Internet Archive"),
+                            artwork = "https://archive.org/services/img/$id",
+                            source = "Internet Archive"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun streamUrl(identifier: String): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("https://archive.org/metadata/${URLEncoder.encode(identifier, "UTF-8")}")
+            .header("User-Agent", "SONORA/0.3 Android").build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("Could not load recording metadata")
+            val files = JSONObject(response.body?.string() ?: "{}").optJSONArray("files")
+                ?: error("No playable files found")
+            val preferred = listOf("mp3", "ogg", "flac", "m4a", "wav")
+            var selected: String? = null
+            for (ext in preferred) {
+                for (i in 0 until files.length()) {
+                    val name = files.optJSONObject(i)?.optString("name") ?: continue
+                    if (name.substringAfterLast('.', "").equals(ext, true)) {
+                        selected = name
+                        break
+                    }
+                }
+                if (selected != null) break
+            }
+            val file = selected ?: error("No supported audio file in this recording")
+            val encoded = file.split("/").joinToString("/") { URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
+            "https://archive.org/download/${URLEncoder.encode(identifier, "UTF-8")}/$encoded"
+        }
+    }
 }
