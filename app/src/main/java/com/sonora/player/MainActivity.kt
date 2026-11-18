@@ -157,7 +157,10 @@ fun SonoraApp(player: ExoPlayer) {
                         onBack = { showPlayer = false },
                         onToggle = { if (player.isPlaying) player.pause() else player.play() },
                         onFavorite = { toggleFavorite(current!!) },
-                        isFavorite = current!!.id in favorites
+                        isFavorite = current!!.id in favorites,
+                        player = player,
+                        onNext = { val i = knownTracks.indexOfFirst { it.id == current!!.id }; if (i >= 0 && i + 1 < knownTracks.size) play(knownTracks[i + 1]) },
+                        onPrevious = { val i = knownTracks.indexOfFirst { it.id == current!!.id }; if (i > 0) play(knownTracks[i - 1]) }
                     )
                     else -> {
                         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -472,7 +475,16 @@ private fun MiniPlayer(track: Track, isPlaying: Boolean, onOpen: () -> Unit, onT
 }
 
 @Composable
-private fun FullPlayer(track: Track, isPlaying: Boolean, onBack: () -> Unit, onToggle: () -> Unit, onFavorite: () -> Unit, isFavorite: Boolean) {
+private fun FullPlayer(track: Track, isPlaying: Boolean, onBack: () -> Unit, onToggle: () -> Unit, onFavorite: () -> Unit, isFavorite: Boolean, player: ExoPlayer, onNext: () -> Unit, onPrevious: () -> Unit) {
+    var position by remember(track.id) { mutableLongStateOf(0L) }
+    var duration by remember(track.id) { mutableLongStateOf(0L) }
+    LaunchedEffect(player, track.id) {
+        while (true) {
+            position = player.currentPosition.coerceAtLeast(0L)
+            duration = player.duration.takeIf { it > 0L } ?: 0L
+            delay(500)
+        }
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.KeyboardArrowDown, "Close player") }
@@ -491,14 +503,21 @@ private fun FullPlayer(track: Track, isPlaying: Boolean, onBack: () -> Unit, onT
         Text(track.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         Text(track.artist, color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(25.dp))
-        LinearProgressIndicator(progress = { 0f }, modifier = Modifier.fillMaxWidth(), color = Pink, trackColor = SurfaceTwo)
+        Slider(value = if (duration > 0L) position.toFloat().coerceIn(0f, duration.toFloat()) else 0f,
+            onValueChange = { if (duration > 0L) player.seekTo(it.toLong()) },
+            valueRange = 0f..(duration.coerceAtLeast(1L).toFloat()),
+            modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Pink, activeTrackColor = Pink, inactiveTrackColor = SurfaceTwo))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatTime(position), color = Muted, fontSize = 10.sp)
+            Text(formatTime(duration), color = Muted, fontSize = 10.sp)
+        }
         Spacer(Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-            IconButton(onClick = {}) { Icon(Icons.Default.SkipPrevious, "Previous", tint = Muted, modifier = Modifier.size(35.dp)) }
+            IconButton(onClick = onPrevious) { Icon(Icons.Default.SkipPrevious, "Previous", tint = Muted, modifier = Modifier.size(35.dp)) }
             FilledIconButton(onClick = onToggle, modifier = Modifier.size(68.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Pink, contentColor = Ink)) {
                 Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play or pause", modifier = Modifier.size(38.dp))
             }
-            IconButton(onClick = {}) { Icon(Icons.Default.SkipNext, "Next", tint = Muted, modifier = Modifier.size(35.dp)) }
+            IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, "Next", tint = Muted, modifier = Modifier.size(35.dp)) }
         }
         Spacer(Modifier.weight(1f))
     }
@@ -601,4 +620,10 @@ object ArchiveCatalog {
             "https://archive.org/download/${URLEncoder.encode(identifier, "UTF-8")}/$encoded"
         }
     }
+}
+
+
+private fun formatTime(milliseconds: Long): String {
+    val totalSeconds = (milliseconds / 1000L).coerceAtLeast(0L)
+    return "%d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
