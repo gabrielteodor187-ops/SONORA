@@ -239,8 +239,7 @@ private fun HomeScreen(
                 Column(Modifier.weight(1f)) {
                     Text("FIND YOUR NEXT REPEAT", color = Lavender, fontSize = 10.sp, letterSpacing = 1.5.sp)
                     Spacer(Modifier.height(8.dp))
-                    Text("What are you
-in the mood for?", fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                    Text("What are you\\nin the mood for?", fontSize = 23.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(12.dp))
                     Text("SEARCH MUSIC  →", color = Pink, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
